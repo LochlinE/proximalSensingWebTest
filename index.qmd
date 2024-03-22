@@ -1,19 +1,140 @@
 ---
-title: "About Me"
+title: "Mean Spectrum over Time"
 about:
   id: me
+  
   template: broadside
-  image: img/profile.png
 ---
 
-:::{#me}
 
-## Goals
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+library(asdreader)
+library(tidyverse)
+library(readxl)
+library(stringr)
+library(prospectr)
+library(plotly)
+```
 
-## Education
 
-## Experience
+```{r Retrieves Multiple Files Contained in Multiple Folders, echo=FALSE, message=FALSE, warning = FALSE}
 
-:::
+masterFolder <- "C:/Users/lochl/OneDrive - Montana State University/Documents/SawflyResearch/Analysis/ProximalSensing2023/asd2023"
+paths <- list.files(masterFolder, full.names = T,recursive = T)
+#paths <- paths[-grep(".ini", paths, fixed = T)]
 
-Thanks for checking out my web site!
+refs <- get_spectra(paths, type = "reflectance") %>%
+  as.data.frame() %>%
+  `rownames<-`(paths)
+
+refs <- refs %>%
+  mutate(
+    pathNoExt = gsub("[[:digit:]]{5}[.].*", "",paths),
+    dcEvent = as.integer(sub(".*/(\\d+)\\.(\\d+)\\.(\\d+)\\.(\\d+)/.*", "\\1", pathNoExt)),
+    month = as.integer(sub(".*/(\\d+)\\.(\\d+)\\.(\\d+)\\.(\\d+)/.*", "\\2", pathNoExt)),
+    day = as.integer(sub(".*/(\\d+)\\.(\\d+)\\.(\\d+)\\.(\\d+)/.*", "\\3", pathNoExt)),
+    year = 2000 + (as.integer(sub(".*/(\\d+)\\.(\\d+)\\.(\\d+)\\.(\\d+)/.*", "\\4", pathNoExt))),
+    date = as.Date(sprintf("%04d-%02d-%02d", year, month, day)),
+    plantName = sub(".*/([^/]+)$", "\\1", pathNoExt),
+    sampleName = paste(dcEvent,plantName, sep = ""),
+    treatment = case_when(
+      substr(plantName,3,3) == "C" ~ "control",
+      substr(plantName,3,3) == "I" ~ "treatment",
+      TRUE ~ NA_character_),
+    plantingGroup = sub(".*/(\\w+)/\\d+\\.\\d+\\.\\d+\\.\\d+/.*", "\\1", pathNoExt))
+
+# calculate DAI for each plantingGroup
+refs <- refs %>%
+  group_by(plantingGroup) %>%
+  mutate(
+    DAI = as.numeric(date - min(date))) %>%
+  ungroup()
+
+# Splice Spectra
+refMat <- as.matrix(refs[,1:2151])
+splicedRefMat <- t(apply(refMat, 1, function(x) spliceCorrection(x,
+                                                                 wav = c(350:2500),
+                                                                 splice = c(965,1775))))
+refs <- as.data.frame(cbind(splicedRefMat,refs[,2152:length(refs)]))
+
+# reduce each sample to the mean spectra
+```
+
+```{r Bin DAI, echo=FALSE, message=FALSE, warning = FALSE}
+# Identify DAI values based on planting group
+DAIDist <- refs %>%
+  group_by(plantingGroup) %>%
+  summarize(DAIs = unique(DAI)) %>%
+  ungroup()
+
+# Produce DAI by Planting group df
+DAIDist <- pivot_wider(data = DAIDist, id_cols = plantingGroup, names_from = DAIs, values_from = DAIs, names_sort = T)
+ tDAIDist <- t(DAIDist)
+
+# Changes to DAI by planting group
+# G = 8 -> 7, 41 -> 42, 50 -> 49
+# H = 34 -> 35, 55 -> 56
+# I = 20 -> 21, 29 - > 28
+# J = 20 -> 21
+# K = 8 -> 7, 15 -> 14, 22 -> 21, 29 -> 28, 36 -> 35
+
+# reassign DAI values
+refs$DAI[refs$plantingGroup == "G" & refs$DAI == "8"] <- 7
+refs$DAI[refs$plantingGroup == "G" & refs$DAI == "41"] <- 42
+refs$DAI[refs$plantingGroup == "G" & refs$DAI == "50"] <- 49
+refs$DAI[refs$plantingGroup == "H" & refs$DAI == "34"] <- 35
+refs$DAI[refs$plantingGroup == "H" & refs$DAI == "55"] <- 56
+refs$DAI[refs$plantingGroup == "I" & refs$DAI == "20"] <- 21
+refs$DAI[refs$plantingGroup == "I" & refs$DAI == "29"] <- 28
+refs$DAI[refs$plantingGroup == "J" & refs$DAI == "20"] <- 21
+refs$DAI[refs$plantingGroup == "K" & refs$DAI == "8"] <- 7
+refs$DAI[refs$plantingGroup == "K" & refs$DAI == "15"] <- 14
+refs$DAI[refs$plantingGroup == "K" & refs$DAI == "22"] <- 21
+refs$DAI[refs$plantingGroup == "K" & refs$DAI == "29"] <- 28
+refs$DAI[refs$plantingGroup == "K" & refs$DAI == "36"] <- 35
+
+# Recheck names to make sure DAIs look correct
+DAIDist2 <- refs %>%
+  group_by(plantingGroup) %>%
+  summarize(DAIs = unique(DAI)) %>%
+  ungroup()
+
+# Produce DAI by Planting group df
+DAIDist2 <- pivot_wider(data = DAIDist2, id_cols = plantingGroup, names_from = DAIs, values_from = DAIs, names_sort = T)
+ tDAIDist2 <- t(DAIDist2)
+```
+
+
+```{r  3D plot spectrum over time, echo=FALSE, message=FALSE, warning = FALSE, fig.margin =TRUE, fig.height = 50, fig.width  = 60}
+rm(SpecMuByDAI)
+SpecMuByDAI <- refs %>%
+ # filter(plantingGroup %in% c("J","K")) %>%
+  # filter(treatment == "treatment") %>%
+  group_by(DAI) %>%
+   summarize(across(everything(),list(mean)))
+# Rename Wavelengths
+names(SpecMuByDAI)[1:2152] <- c("DAI",c(350:2500))
+# SpecMuByDAI <- SpecMuByDAI[order(SpecMuByDAI$DAI)]
+
+# create 3d plotting df
+ spec3d<- list(as.matrix(SpecMuByDAI[,2:2152]), #z
+               as.numeric(colnames(SpecMuByDAI[2:2152])), #x
+               c(unique(SpecMuByDAI[,1]))) %>% #y
+                set_names(c("z","x","y"))
+row.names(spec3d$z) <- c(sort(SpecMuByDAI$DAI))
+ 
+plot_ly(
+  z = ~ spec3d$z,
+  x = ~ spec3d$x,
+  y = ~ row.names(spec3d$z),
+  colors = c("darkgreen","green","greenyellow","yellow","orange","gray"),
+  type = "surface",
+  colorbar = c(0,.4),
+cmin = 0,cmax = .3) %>% layout(scene = list(
+  # xaxis = list(title = "Wavelength", range = range(spec3d$x)),
+    xaxis = list(title = "Wavelength", range = range(380:2500)),
+  yaxis = list(title = "Days After Infestation", range = range(spec3d$y)),
+  zaxis = list(title = "Reflectance", range = c(0,.6)),
+               colorbar = list(title = "reflectance", cmin = 0, cmax = .5)
+))
+```
